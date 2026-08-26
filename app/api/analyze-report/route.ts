@@ -6,7 +6,7 @@ import { GoogleGenerativeAI } from "@google/generative-ai";
    ========================================================================= */
 
 const genAi = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
-
+``
 const IMAGE_ANALYSIS_PROMPT = `You are an evidence image analyst for a public complaint reporting system. Your sole job is to produce a structured, factual description of the provided image(s) that will be used by a downstream report classifier.
 
 Analyze the image(s) and describe only what is objectively visible. Your description must be optimized to help classify the incident into one of these report types: Crime, Red Tape, Scam, Child Abuse, Women Abuse, Overpricing, Fire, Accident, or Gas Station Concerns.
