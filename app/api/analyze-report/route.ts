@@ -95,6 +95,35 @@ async function generateAccessToken(): Promise<string> {
 }
 
 /* =========================================================================
+   eGov SSO — Token + SSO Authenticatino
+   ========================================================================= */
+
+  
+
+   async function generateAccessTokenSSO(): Promise<string> {
+    const baseUrl : string = process.env.EGOV_SSO_URL;
+    const endpoint : string = `${baseUrl}/api/token`;
+    const partnerCode : string = process.env.EGOV_SSO_PARTNER_CODE;
+    const partnerSecret : string = process.env.EGOV_SSO_PARTNER_SECRET;
+    
+    const response = await fetch(`${baseUrl}/api/token`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        exchange_code: "generated_exchange_code",
+        scope: "SSO_AUTHENTICATION",
+        partner_code: partnerCode,
+        partner_secret: partnerSecret,
+      }),
+    });
+
+    const data = await response.json();
+    return data.access_token;
+   }
+
+/* =========================================================================
    eReport — Token + Submission
    ========================================================================= */
 
