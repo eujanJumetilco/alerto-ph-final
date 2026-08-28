@@ -99,7 +99,7 @@ async function generateAccessToken(): Promise<string> {
    ========================================================================= */
 
   async function processSSOAuthentication() {
-    const baseUrl : string = process.env.EGOV_SSO_URL;
+    const baseUrl : string | undefined = process.env.EGOV_SSO_URL;
     const endpoint : string = `${baseUrl}/api/partner/sso_authentication`;
     const accessToken : string = await generateAccessTokenSSO();
 
@@ -129,10 +129,11 @@ async function generateAccessToken(): Promise<string> {
   }
 
   async function generateAccessTokenSSO(): Promise<string> {
-    const baseUrl : string = process.env.EGOV_SSO_URL;
+    const baseUrl : string | undefined = process.env.EGOV_SSO_URL;
     const endpoint : string = `${baseUrl}/api/token`;
-    const partnerCode : string = process.env.EGOV_SSO_PARTNER_CODE;
-    const partnerSecret : string = process.env.EGOV_SSO_PARTNER_SECRET;
+    const exchangeCode : string | undefined = process.env.EGOV_SSO_EXCHANGE_CODE;
+    const partnerCode : string | undefined = process.env.EGOV_SSO_PARTNER_CODE;
+    const partnerSecret : string | undefined = process.env.EGOV_SSO_PARTNER_SECRET;
 
     try{
       const response = await fetch(endpoint, {
@@ -141,7 +142,7 @@ async function generateAccessToken(): Promise<string> {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          exchange_code: "generated_exchange_code",
+          exchange_code: exchangeCode,
           scope: "SSO_AUTHENTICATION",
           partner_code: partnerCode,
           partner_secret: partnerSecret,

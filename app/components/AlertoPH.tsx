@@ -7,7 +7,7 @@ import {
   MoreVertical, ChevronLeft, Sparkles, Calendar, MapPin, Image as ImageIcon,
   Lock, Copy, Home, PlusSquare, User, Ghost, Footprints, Wallet,
   Check, Landmark, ShieldOff, Siren, Flame, AlertTriangle,
-  TrendingUp, Baby, HeartHandshake, Fuel, Scissors
+  TrendingUp, Baby, HeartHandshake, Fuel, Scissors, Phone, Mail
 } from "lucide-react";
 
 /* =========================================================================
@@ -276,27 +276,47 @@ function ScreenHeader({ title, onBack }: { title: string; onBack: () => void }) 
 /* =========================================================================
    Sign In Screen
    ========================================================================= */
-function SignInScreen({ onSignIn }: { onSignIn: () => void }) {
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      onSignIn();
-    }, 1000);
-    return () => clearTimeout(timer);
-  }, [onSignIn]);
+  function SignInScreen({ onSignIn }: { onSignIn: () => void }) {
+    useEffect(() => {
+      const isProduction = process.env.NODE_ENV === "production";
 
-  return (
-    <div className="flex flex-col items-center justify-center h-full px-8 text-center bg-white">
-      <div className="flex flex-col items-center">
-        <div className="w-24 h-24 rounded-2xl bg-white flex items-center justify-center shadow-md">
-          <img src="/icon.png" alt="AlertoPH" className="w-[80px] h-[80px] object-contain" />
+      if (isProduction) {
+        const authenticate = async () => {
+          const res = await fetch("/api/analyze-report", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({}),
+          });
+
+          if (!res.ok) {
+            throw new Error(`API error: ${res.status}`);
+          }
+
+          onSignIn();
+        };
+
+        authenticate().catch((err) => console.error("SSO Authentication failed:", err));
+      } else {
+        const timer = setTimeout(() => {
+          onSignIn();
+        }, 1000);
+        return () => clearTimeout(timer);
+      }
+    }, [onSignIn]);
+
+    return (
+      <div className="flex flex-col items-center justify-center h-full px-8 text-center bg-white">
+        <div className="flex flex-col items-center">
+          <div className="w-24 h-24 rounded-2xl bg-white flex items-center justify-center shadow-md">
+            <img src="/icon.png" alt="AlertoPH" className="w-[80px] h-[80px] object-contain" />
+          </div>
+          <h1 className="text-2xl font-bold text-blue-700 mt-5">AlertoPH</h1>
+          <p className="text-gray-400 text-sm mt-1 mb-8">Report. Help. Protect.</p>
         </div>
-        <h1 className="text-2xl font-bold text-blue-700 mt-5">AlertoPH</h1>
-        <p className="text-gray-400 text-sm mt-1 mb-8">Report. Help. Protect.</p>
+        <div className="w-8 h-8 border-4 border-blue-100 border-t-blue-700 rounded-full animate-spin mt-4"></div>
       </div>
-      <div className="w-8 h-8 border-4 border-blue-100 border-t-blue-700 rounded-full animate-spin mt-4"></div>
-    </div>
-  );
-}
+    );
+  }
 
 /* =========================================================================
    Analyzing Screen
@@ -757,18 +777,66 @@ function UpdatesScreen({ onNavigate }: { onNavigate: (key: string) => void }) {
 }
 
 function ProfileScreen({ onNavigate }: { onNavigate: (key: string) => void }) {
+  const user = {
+    fullName: "PEDRO DELA CRUZ II",
+    mobile: "+639090000002",
+    email: "josie02@yopmail.com",
+    address: "#100 UGO, DOÑA IMELDA, QUEZON CITY, METRO MANILA, PHILIPPINES",
+    photo: "https://staging-files.oueg.info/staging/9e2be7e4-eafa-4f13-8cbd-a979d98c5b4a.jpg",
+    provider: mockUser.provider,
+  };
+
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex flex-col h-full bg-gray-50">
       <TopBar onMenu={() => {}} />
-      <div className="flex flex-col items-center px-8 pt-6">
-        <div className="w-20 h-20 rounded-full bg-blue-50 flex items-center justify-center">
-          <User size={32} className="text-blue-600" />
+
+      {/* Hero header */}
+      <div className="bg-blue-700 px-6 pt-6 pb-10">
+        <p className="text-blue-200 text-xs uppercase tracking-widest mb-4">My Profile</p>
+        <div className="flex items-center gap-4">
+          <img
+            src={user.photo}
+            alt={user.fullName}
+            className="w-16 h-16 rounded-full object-cover border-2 border-white shadow"
+          />
+          <div>
+            <p className="text-white font-bold text-base leading-tight">{user.fullName}</p>
+            <p className="text-blue-200 text-xs mt-1">Signed in with {user.provider}</p>
+          </div>
         </div>
-        <p className="font-bold text-gray-900 mt-3">{mockUser.fullName}</p>
-        <p className="text-xs text-gray-400">Signed in with {mockUser.provider}</p>
       </div>
+
+      {/* Info card — floats over the blue header */}
+      <div className="mx-4 -mt-5 bg-white rounded-2xl shadow-md px-5 py-4 flex flex-col gap-4">
+        <InfoRow icon={<Phone size={16} />} label="Mobile" value={user.mobile} />
+        <div className="border-t border-gray-100" />
+        <InfoRow icon={<Mail size={16} />} label="Email" value={user.email} />
+        <div className="border-t border-gray-100" />
+        <InfoRow icon={<MapPin size={16} />} label="Address" value={user.address} />
+      </div>
+
       <div className="flex-1" />
       <BottomNav current="profile" onNavigate={onNavigate} />
+    </div>
+  );
+}
+
+function InfoRow({
+  icon,
+  label,
+  value,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  value: string;
+}) {
+  return (
+    <div className="flex items-start gap-3">
+      <div className="mt-0.5 text-blue-600">{icon}</div>
+      <div className="flex flex-col">
+        <span className="text-xs text-gray-400 uppercase tracking-wide">{label}</span>
+        <span className="text-sm text-gray-800 font-medium leading-snug mt-0.5">{value}</span>
+      </div>
     </div>
   );
 }
