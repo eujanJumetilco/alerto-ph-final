@@ -105,7 +105,7 @@ function ReportsProvider({ children }: { children: React.ReactNode }) {
   );
 
   async function addReport(draft: ReportDraft): Promise<Report> {
-    // 🔒 Calls our secure Next.js API route instead of a client-side service
+    // Calls Next.js API route
     const res = await fetch("/api/analyze-report", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
