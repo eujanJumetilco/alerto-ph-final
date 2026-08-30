@@ -339,9 +339,7 @@ function SignInScreen({ onSignIn }: { onSignIn: () => void }) {
   const { setUser } = useUserStore();
 
   useEffect(() => {
-    const isProduction = true; // process.env.NODE_ENV === "production";
-
-    if (isProduction) {
+    if (process.env.NODE_ENV === "production") { // if in prod
       const authenticate = async () => {
         // action: "sso" → runs SSO auth + DB upsert, returns user data
         const res = await fetch("/api/egov", {
