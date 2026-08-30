@@ -5,6 +5,7 @@ import { Schema, model, models, Document, Types } from 'mongoose'
 export interface IReport extends Document {
   reporterId: Types.ObjectId
   caseNumber: string
+  title: string
   category: string
   handler?: string
   summary: string
@@ -31,6 +32,12 @@ const ReportSchema = new Schema<IReport>(
       required: [true, 'Case number is required'],
       unique: true,
       trim: true,
+    },
+    title: {
+      type: String,
+      required: [true, 'Title is required'],
+      trim: true,
+      maxlength: [100, 'Title cannot exceed 100 characters'],
     },
     category: {
       type: String,

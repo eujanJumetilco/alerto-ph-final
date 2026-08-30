@@ -1,12 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
 import { GoogleGenerativeAI } from "@google/generative-ai";
+import { connectToDatabase } from "@/lib/mongodb";
+import UserModel from "@/models/User";
+import ReportModel from "@/models/Report";
+import { access } from "fs";
 
 /* =========================================================================
    Gemini — Image Analysis
    ========================================================================= */
 
 const genAi = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
-``
+
 const IMAGE_ANALYSIS_PROMPT = `You are an evidence image analyst for a public complaint reporting system. Your sole job is to produce a structured, factual description of the provided image(s) that will be used by a downstream report classifier.
 
 Analyze the image(s) and describe only what is objectively visible. Your description must be optimized to help classify the incident into one of these report types: Crime, Red Tape, Scam, Child Abuse, Women Abuse, Overpricing, Fire, Accident, or Gas Station Concerns.
@@ -46,7 +50,10 @@ function formatImageForGemini(base64: string) {
   return { inlineData: { mimeType: "image/jpeg", data: base64 } };
 }
 
-async function tryWithModel(modelName: string, imageParts: ReturnType<typeof formatImageForGemini>[]) {
+async function tryWithModel(
+  modelName: string,
+  imageParts: ReturnType<typeof formatImageForGemini>[]
+) {
   const model = genAi.getGenerativeModel({ model: modelName });
   const result = await model.generateContent([IMAGE_ANALYSIS_PROMPT, ...imageParts]);
   return result.response.text();
@@ -58,9 +65,9 @@ async function analyzeImages(base64Images: string[]): Promise<string> {
 
   for (const modelName of MODEL_FALLBACKS) {
     try {
-      console.log(`Trying image reading model: ${modelName}`);
+      if(process.env.NODE_ENV === "development") console.log(`Trying image reading model: ${modelName}`);
       const text = await tryWithModel(modelName, imageParts);
-      console.log(`Success with image reading model: ${modelName}`);
+      if(process.env.NODE_ENV === "development") console.log(`Success with image reading model: ${modelName}`);
       return text;
     } catch (error: any) {
       console.warn(`Model ${modelName} failed:`, error?.message ?? error);
@@ -72,10 +79,10 @@ async function analyzeImages(base64Images: string[]): Promise<string> {
 }
 
 /* =========================================================================
-   eGovAI — Token + Report Generation
+   eGovAI — Token + Report Classification
    ========================================================================= */
 
-async function generateAccessToken(): Promise<string> {
+async function generateEGovAIToken(): Promise<string> {
   const baseUrl = process.env.EGOV_AI_URL;
   const endpoint = `${baseUrl}/api/v1/egov/integration/token`;
   const accessCode = process.env.EGOV_AI_ACCESS_CODE;
@@ -94,69 +101,130 @@ async function generateAccessToken(): Promise<string> {
   return data.access_token;
 }
 
-/* =========================================================================
-   eGov SSO — Token + SSO Authenticatino
-   ========================================================================= */
+async function classifyReport(systemPrompt: string): Promise<string> {
+  const baseUrl = process.env.EGOV_AI_URL;
+  const endpoint = `${baseUrl}/api/v1/egov/integration/ai_assistant/generate`;
+  const accessToken = await generateEGovAIToken();
 
-  async function processSSOAuthentication() {
-    const baseUrl : string | undefined = process.env.EGOV_SSO_URL;
-    const endpoint : string = `${baseUrl}/api/partner/sso_authentication`;
-    const accessToken : string = await generateAccessTokenSSO();
+  const response = await fetch(endpoint!, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ prompt: systemPrompt, category: "GLOBAL" }),
+  });
 
-    try{
-      const response = await fetch(endpoint, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-        },
-      });
-  
-      const data = await response.json();
-      const userPersonalData = data.data;
-  
-      const responseDto = {
-        name: `${userPersonalData.first_name} ${userPersonalData.middle_name} ${userPersonalData.last_name} ${userPersonalData.suffix}`,
-        mobile: userPersonalData.mobile,
-        email: userPersonalData.email,
-        address: userPersonalData.address,
-      }
-  
-      return responseDto;
-    }
-    catch{
-      throw new Error("Failed to process SSO Authentication.");
-    }
+  if (!response.ok) {
+    throw new Error(`eGovAI error: ${response.status} ${response.statusText}`);
   }
 
-  async function generateAccessTokenSSO(): Promise<string> {
-    const baseUrl : string | undefined = process.env.EGOV_SSO_URL;
-    const endpoint : string = `${baseUrl}/api/token`;
-    const exchangeCode : string | undefined = process.env.EGOV_SSO_EXCHANGE_CODE;
-    const partnerCode : string | undefined = process.env.EGOV_SSO_PARTNER_CODE;
-    const partnerSecret : string | undefined = process.env.EGOV_SSO_PARTNER_SECRET;
+  const data = await response.json();
+  return data.data;
+}
 
-    try{
+/* =========================================================================
+   eGov SSO — Token + Authentication + DB Upsert
+   ========================================================================= */
+
+async function generateSSOToken(){
+  const baseUrl: string | undefined = process.env.EGOV_SSO_URL;
+  const endpoint: string = `${baseUrl}/api/token`;
+
+  try {
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        exchange_code: process.env.EGOV_SSO_EXCHANGE_CODE,
+        scope: "SSO_AUTHENTICATION",
+        partner_code: process.env.EGOV_SSO_PARTNER_CODE,
+        partner_secret: process.env.EGOV_SSO_PARTNER_SECRET,
+      }),
+    });
+
+    const data = await response.json();
+    return data.access_token;
+  } catch {
+    console.error("Failed to generate SSO access token, proceeding to use mock user data.");
+  }
+
+  return null;
+}
+
+async function processSSOAuthentication() {
+  const baseUrl: string | undefined = process.env.EGOV_SSO_URL;
+  const endpoint: string = `${baseUrl}/api/partner/sso_authentication`;
+  let accessToken;
+
+  try{
+    accessToken = await generateSSOToken();
+  }
+  catch{
+    throw new Error("Failed to generate SSO access token, proceeding to use mock user data.");
+  }
+  
+  try {
+    let data, u;
+
+    if (accessToken){
       const response = await fetch(endpoint, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          exchange_code: exchangeCode,
-          scope: "SSO_AUTHENTICATION",
-          partner_code: partnerCode,
-          partner_secret: partnerSecret,
-        }),
+        headers: { Authorization: `Bearer ${accessToken}` },
       });
 
-      const data = await response.json();
-      return data.access_token;
+      data = await response.json();
+      u = data.data;
+    } else {
+        u = { // mock user data
+            email: 'josie02@yopmail.com',
+            first_name: 'PEDRO',
+            middle_name: null,
+            last_name: 'DELA CRUZ',
+            suffix: 'II',
+            photo: 'https://staging-files.oueg.info/staging/9e2be7e4-eafa-4f13-8cbd-a979d98c5b4a.jpg',
+            mobile: '+639090000002',
+            address: '#100 UGO, DOÑA IMELDA, QUEZON CITY, METRO MANILA, PHILIPPINES',
+        }
     }
-    catch{
-      throw new Error("Failed to generate access token for SSO.");
-    }
-    
-   }
+
+    return {
+      name: `${u.first_name} ${u.middle_name || ""} ${u.last_name} ${u.suffix || ""}`.trim(),
+      mobile: u.mobile,
+      email: u.email,
+      address: u.address,
+      firstName: u.first_name,
+      lastName: u.last_name,
+      photo: u.photo,
+    };
+  } catch {
+    throw new Error("Failed to process SSO Authentication.");
+  }
+
+}
+
+async function upsertUser(dto: Awaited<ReturnType<typeof processSSOAuthentication>>) {
+  await connectToDatabase();
+
+  const firstName = dto.firstName;
+  const lastName = dto.lastName;
+
+  const user = await UserModel.findOneAndUpdate(
+    { mobileNumber: dto.mobile },
+    {
+      $setOnInsert: {
+        mobileNumber: dto.mobile,
+        firstName,
+        lastName,
+        email: dto.email,
+        address: dto.address,
+      },
+    },
+    { upsert: true, new: true, setDefaultsOnInsert: true }
+  );
+
+  return user;
+}
 
 /* =========================================================================
    eReport — Token + Submission
@@ -165,12 +233,11 @@ async function generateAccessToken(): Promise<string> {
 async function generateEReportToken(): Promise<string> {
   const baseUrl = process.env.EREPORT_URL;
   const endpoint = `${baseUrl}/api/integration/token`;
-  const accessCode = process.env.EREPORT_ACCESS_TOKEN;
 
   const response = await fetch(endpoint!, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ access_code: accessCode }),
+    body: JSON.stringify({ access_code: process.env.EREPORT_ACCESS_TOKEN }),
   });
 
   if (!response.ok) {
@@ -189,7 +256,7 @@ interface ReportData {
   summary: string;
 }
 
-async function submitReport(reportData: ReportData) {
+async function submitToEReport(reportData: ReportData) {
   const baseUrl = process.env.EREPORT_URL;
   const endpoint = `${baseUrl}/api/integration/submit_complaint`;
   const accessToken = await generateEReportToken();
@@ -231,11 +298,10 @@ async function submitReport(reportData: ReportData) {
 
 function parseReportString(responseString: string) {
   const regex = /\[([^\]]+)\]\s*\[([^\]]+)\]\s*\[([^\]]+)\]\s*\[([\s\S]*?)\]/;
-  console.log("Parsing response string:", responseString);
 
   const match = responseString.match(regex);
   if (!match) {
-    throw new Error("Failed to parse: String does not match the expected format.");
+    throw new Error("Failed to parse AI response: unexpected format.");
   }
 
   return {
@@ -247,21 +313,90 @@ function parseReportString(responseString: string) {
 }
 
 /* =========================================================================
-   POST /api/analyze-report
+   GET /api/egov?reporterId=<id>
+   Returns all reports belonging to a user, newest first.
+   ========================================================================= */
+
+export async function GET(req: NextRequest) {
+  try {
+    const { searchParams } = new URL(req.url);
+    const reporterId = searchParams.get("reporterId");
+
+    if (!reporterId) {
+      return NextResponse.json({ error: "reporterId is required" }, { status: 400 });
+    }
+
+    await connectToDatabase();
+
+    const reports = await ReportModel.find({ reporterId })
+      .sort({ createdAt: -1 })
+      .lean();
+
+    return NextResponse.json({ reports });
+  } catch (error: any) {
+    console.error("[GET /api/egov] error:", error);
+    return NextResponse.json(
+      { error: error?.message ?? "Internal server error" },
+      { status: 500 }
+    );
+  }
+}
+
+/* =========================================================================
+   POST /api/egov
+
+   Dispatches on the `action` field in the request body:
+
+     action: "sso"
+       → SSO auth + DB user upsert. Called by SignInScreen on mount.
+       → Returns: { _id, name, mobile, email, address }
+
+     action: "analyze"
+       → Image analysis (Gemini) + AI classification (eGovAI)
+         + complaint submission (eReport) + DB save.
+       → Body: { description, location, images[], reporterId }
+       → Returns: { caseNumber, reportType, assignedAgency, title, summary }
    ========================================================================= */
 
 export async function POST(req: NextRequest) {
   try {
-    const { description, location, images } = await req.json();
+    const body = await req.json();
+    const { action } = body;
 
-    // 1. Analyze any uploaded images via Gemini
-    let imageDescriptions = "Not provided";
-    if (Array.isArray(images) && images.length > 0) {
-      imageDescriptions = await analyzeImages(images);
+    /* ------------------------------------------------------------------
+       action: "sso" — authenticate + upsert user
+    ------------------------------------------------------------------ */
+    if (action === "sso") {
+      const dto = await processSSOAuthentication();
+      const user = await upsertUser(dto);
+
+      return NextResponse.json({
+        _id:     user._id.toString(),
+        name:    dto.name,
+        mobile:  dto.mobile,
+        email:   dto.email,
+        address: dto.address,
+      });
     }
 
-    // 2. Build the eGovAI prompt
-    const systemPrompt = `You are an expert text analyzer. I will provide you with a string of text, and you must perform the following tasks:
+    /* ------------------------------------------------------------------
+       action: "analyze" — full report pipeline
+    ------------------------------------------------------------------ */
+    if (action === "analyze") {
+      const { description, location, images, reporterId } = body;
+
+      if (!reporterId) {
+        return NextResponse.json({ error: "reporterId is required" }, { status: 400 });
+      }
+
+      // 1. Gemini image analysis
+      let imageDescriptions = "Not provided";
+      if (Array.isArray(images) && images.length > 0) {
+        imageDescriptions = await analyzeImages(images);
+      }
+
+      // 2. Build eGovAI classification prompt
+      const systemPrompt = `You are an expert text analyzer. I will provide you with a string of text, and you must perform the following tasks:
 
     1. Analyze the content of the provided string.
     2. Determine the report type based on the content. You must choose *only one* from the following exact list: Crime, Red Tape, Scam, Child Abuse, Women Abuse, Overpricing, Fire, Accident, Gas Station Concerns.
@@ -290,51 +425,51 @@ export async function POST(req: NextRequest) {
     Input Text:
     ${description}`;
 
-    console.log("System Prompt:", systemPrompt);
+      // 3. eGovAI classification
+      const aiRaw = await classifyReport(systemPrompt);
+      const parsedData = parseReportString(aiRaw);
 
-    // 3. Call eGovAI
-    const baseUrl = process.env.EGOV_AI_URL;
-    const endpoint = `${baseUrl}/api/v1/egov/integration/ai_assistant/generate`;
-    const accessToken = await generateAccessToken();
+      // 4. eReport submission
+      const eReportSubmission = await submitToEReport({
+        description,
+        reportType:     parsedData.reportType,
+        assignedAgency: parsedData.assignedAgency,
+        title:          parsedData.title,
+        summary:        parsedData.summary,
+      });
 
-    const aiResponse = await fetch(endpoint!, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ prompt: systemPrompt, category: "GLOBAL" }),
-    });
+      // 5. Save to MongoDB
+      await connectToDatabase();
+      const savedReport = await ReportModel.create({
+        reporterId,
+        caseNumber:  eReportSubmission.case_number,
+        title:       parsedData.title,
+        category:    parsedData.reportType,
+        handler:     parsedData.assignedAgency,
+        summary:     parsedData.summary,
+        description,
+        location:    location || "Not specified",
+        status:      "Pending",
+        images:      images ?? [],
+      });
 
-    if (!aiResponse.ok) {
-      throw new Error(`eGovAI error: ${aiResponse.status} ${aiResponse.statusText}`);
+      // 6. Return to client
+      return NextResponse.json({
+        caseNumber:     eReportSubmission.case_number,
+        reportType:     parsedData.reportType,
+        assignedAgency: parsedData.assignedAgency,
+        title:          parsedData.title,
+        summary:        parsedData.summary,
+      });
     }
 
-    const aiData = await aiResponse.json();
-    const parsedData = parseReportString(aiData.data);
-    console.log("Parsed AI Scan:", parsedData);
+    /* ------------------------------------------------------------------
+       Unknown action
+    ------------------------------------------------------------------ */
+    return NextResponse.json({ error: `Unknown action: "${action}"` }, { status: 400 });
 
-    // 4. Submit to eReport
-    const eReportSubmission = await submitReport({
-      description,
-      reportType:     parsedData.reportType,
-      assignedAgency: parsedData.assignedAgency,
-      title:          parsedData.title,
-      summary:        parsedData.summary,
-    });
-
-    console.log("eReport Submission Response:", eReportSubmission);
-
-    // 5. Return everything the client needs
-    return NextResponse.json({
-      caseNumber:     eReportSubmission.case_number,
-      reportType:     parsedData.reportType,
-      assignedAgency: parsedData.assignedAgency,
-      title:          parsedData.title,
-      summary:        parsedData.summary,
-    });
   } catch (error: any) {
-    console.error("analyze-report route error:", error);
+    console.error("[POST /api/egov] error:", error);
     return NextResponse.json(
       { error: error?.message ?? "Internal server error" },
       { status: 500 }

@@ -1,6 +1,8 @@
 "use client";
 
-import React, { useState, createContext, useContext, useMemo, useEffect, useRef } from "react";
+import React, { useState, createContext, useContext, useMemo, useEffect, useRef, useCallback } from "react";
+import { useUserStore } from "@/store/useUserStore";
+import { useReportStore } from "@/store/useReportStore";
 
 import {
   Shield, FileText, Clock, CheckCircle2, Bell, Menu, Plus, Filter,
@@ -11,36 +13,27 @@ import {
 } from "lucide-react";
 
 /* =========================================================================
-   Mock User
-   ========================================================================= */
-const mockUser = {
-  firstName: "Juan",
-  fullName: "Juan Dela Cruz",
-  provider: "eGovPH",
-  verified: true,
-};
-
-/* =========================================================================
    Categories & Statuses
    ========================================================================= */
 const CATEGORY: Record<string, { icon: React.ElementType; bg: string; fg: string }> = {
-  crime:              { icon: Footprints,    bg: "bg-red-50",     fg: "text-red-500"    },
-  redtape:            { icon: Scissors,      bg: "bg-slate-50",   fg: "text-slate-500"  },
-  scam:               { icon: Ghost,         bg: "bg-purple-50",  fg: "text-purple-600" },
-  childabuse:         { icon: Baby,          bg: "bg-amber-50",   fg: "text-amber-600"  },
-  womenabuse:         { icon: HeartHandshake, bg: "bg-pink-50",   fg: "text-pink-600"   },
-  overpricing:        { icon: TrendingUp,    bg: "bg-orange-50",  fg: "text-orange-600" },
-  fire:               { icon: Flame,         bg: "bg-red-50",     fg: "text-red-600"    },
-  accident:           { icon: Siren,         bg: "bg-yellow-50",  fg: "text-yellow-600" },
-  gasstationconcerns: { icon: Fuel,          bg: "bg-green-50",   fg: "text-green-600"  },
-  other:              { icon: AlertTriangle, bg: "bg-gray-50",    fg: "text-gray-500"   },
+  crime:              { icon: Footprints,     bg: "bg-red-50",     fg: "text-red-500"    },
+  redtape:            { icon: Scissors,       bg: "bg-slate-50",   fg: "text-slate-500"  },
+  scam:               { icon: Ghost,          bg: "bg-purple-50",  fg: "text-purple-600" },
+  childabuse:         { icon: Baby,           bg: "bg-amber-50",   fg: "text-amber-600"  },
+  womenabuse:         { icon: HeartHandshake, bg: "bg-pink-50",    fg: "text-pink-600"   },
+  overpricing:        { icon: TrendingUp,     bg: "bg-orange-50",  fg: "text-orange-600" },
+  fire:               { icon: Flame,          bg: "bg-red-50",     fg: "text-red-600"    },
+  accident:           { icon: Siren,          bg: "bg-yellow-50",  fg: "text-yellow-600" },
+  gasstationconcerns: { icon: Fuel,           bg: "bg-green-50",   fg: "text-green-600"  },
+  other:              { icon: AlertTriangle,  bg: "bg-gray-50",    fg: "text-gray-500"   },
 };
 
 const STATUS: Record<string, { bg: string; fg: string }> = {
-  "Under Review": { bg: "bg-orange-50", fg: "text-orange-600" },
-  Assigned:       { bg: "bg-blue-50",   fg: "text-blue-600"   },
-  "Action Needed":{ bg: "bg-red-50",    fg: "text-red-600"    },
-  Resolved:       { bg: "bg-green-50",  fg: "text-green-600"  },
+  "Under Review":  { bg: "bg-orange-50", fg: "text-orange-600" },
+  Assigned:        { bg: "bg-blue-50",   fg: "text-blue-600"   },
+  "Action Needed": { bg: "bg-red-50",    fg: "text-red-600"    },
+  Resolved:        { bg: "bg-green-50",  fg: "text-green-600"  },
+  Pending:         { bg: "bg-gray-50",   fg: "text-gray-500"   },
 };
 
 /* =========================================================================
@@ -81,8 +74,10 @@ interface Stats {
 interface ReportsContextValue {
   reports: Report[];
   stats: Stats;
+  isLoadingReports: boolean;
   addReport: (draft: ReportDraft) => Promise<Report>;
   getReportById: (id: string) => Report | null;
+  refreshReports: () => Promise<void>;
   lastCreatedId: string | null;
 }
 
@@ -92,8 +87,49 @@ interface ReportsContextValue {
 const ReportsContext = createContext<ReportsContextValue | null>(null);
 
 function ReportsProvider({ children }: { children: React.ReactNode }) {
+  const { user } = useUserStore();
   const [reports, setReports] = useState<Report[]>([]);
+  const [isLoadingReports, setIsLoadingReports] = useState(false);
   const [lastCreatedId, setLastCreatedId] = useState<string | null>(null);
+
+  // Normalize a raw DB document into the client Report shape
+  function normalizeDbReport(r: any): Report {
+    return {
+      id: r._id?.toString() ?? r.id,
+      referenceNumber: r.caseNumber,
+      title: r.title ?? r.summary?.slice(0, 60), // use summary as title if no dedicated title field
+      category: r.category?.toLowerCase().replace(/\s+/g, "") ?? "other",
+      typeLabel: r.category ?? "Other",
+      handler: r.handler ?? "Unassigned",
+      summary: r.summary ?? "",
+      timeStamp: r.timestamp ?? new Date(r.createdAt).getTime(),
+      status: r.status ?? "Pending",
+      description: r.description ?? "",
+      location: r.location ?? "",
+      images: r.images ?? [],
+    };
+  }
+
+  // Fetch all reports for the current user from the DB
+  const refreshReports = useCallback(async () => {
+    if (!user?._id) return;
+    setIsLoadingReports(true);
+    try {
+      const res = await fetch(`/api/egov?reporterId=${user._id}`);
+      if (!res.ok) throw new Error(`Failed to fetch reports: ${res.status}`);
+      const data = await res.json();
+      setReports((data.reports ?? []).map(normalizeDbReport));
+    } catch (err) {
+      console.error("refreshReports error:", err);
+    } finally {
+      setIsLoadingReports(false);
+    }
+  }, [user?._id]);
+
+  // Load reports whenever the logged-in user changes
+  useEffect(() => {
+    refreshReports();
+  }, [refreshReports]);
 
   const stats = useMemo<Stats>(
     () => ({
@@ -105,14 +141,15 @@ function ReportsProvider({ children }: { children: React.ReactNode }) {
   );
 
   async function addReport(draft: ReportDraft): Promise<Report> {
-    // Calls Next.js API route
-    const res = await fetch("/api/analyze-report", {
+    const res = await fetch("/api/egov", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
+        action: "analyze",
         description: draft.description,
         location: draft.location,
         images: draft.images,
+        reporterId: user!._id,   // passed from Zustand store
       }),
     });
 
@@ -121,10 +158,10 @@ function ReportsProvider({ children }: { children: React.ReactNode }) {
     }
 
     const scannedDescription = await res.json();
-    console.log(scannedDescription);
 
+    // Optimistically add to local state so the UI updates immediately
     const newReport: Report = {
-      id: `r${Date.now()}`,
+      id: `optimistic-${Date.now()}`,    // temp id; replaced on next refreshReports()
       referenceNumber: scannedDescription.caseNumber,
       title: scannedDescription.title,
       category: scannedDescription.reportType.toLowerCase().replace(/\s+/g, ""),
@@ -138,8 +175,17 @@ function ReportsProvider({ children }: { children: React.ReactNode }) {
       images: draft.images ?? [],
     };
 
+    useReportStore.getState().setReport({
+      id: newReport.id,
+      title: newReport.title,
+      referenceNumber: newReport.referenceNumber,
+    });
+
     setReports((prev) => [newReport, ...prev]);
     setLastCreatedId(newReport.id);
+
+    // Sync with the DB in the background so real _id replaces the optimistic one
+    refreshReports();
 
     return newReport;
   }
@@ -148,7 +194,16 @@ function ReportsProvider({ children }: { children: React.ReactNode }) {
     return reports.find((r) => r.id === id) || null;
   }
 
-  const value: ReportsContextValue = { reports, stats, addReport, getReportById, lastCreatedId };
+  const value: ReportsContextValue = {
+    reports,
+    stats,
+    isLoadingReports,
+    addReport,
+    getReportById,
+    refreshReports,
+    lastCreatedId,
+  };
+
   return <ReportsContext.Provider value={value}>{children}</ReportsContext.Provider>;
 }
 
@@ -162,17 +217,9 @@ function useReports(): ReportsContextValue {
    UI Components
    ========================================================================= */
 function StatCard({
-  icon: Icon,
-  iconBg,
-  iconFg,
-  value,
-  label,
+  icon: Icon, iconBg, iconFg, value, label,
 }: {
-  icon: React.ElementType;
-  iconBg: string;
-  iconFg: string;
-  value: number;
-  label: string;
+  icon: React.ElementType; iconBg: string; iconFg: string; value: number; label: string;
 }) {
   return (
     <div className="flex-1 rounded-2xl border border-gray-100 bg-gray-50 p-4 flex flex-col gap-3">
@@ -273,50 +320,83 @@ function ScreenHeader({ title, onBack }: { title: string; onBack: () => void }) 
   );
 }
 
+function InfoRow({ icon, label, value }: { icon: React.ReactNode; label: string; value: string }) {
+  return (
+    <div className="flex items-start gap-3">
+      <div className="mt-0.5 text-blue-600">{icon}</div>
+      <div className="flex flex-col">
+        <span className="text-xs text-gray-400 uppercase tracking-wide">{label}</span>
+        <span className="text-sm text-gray-800 font-medium leading-snug mt-0.5">{value}</span>
+      </div>
+    </div>
+  );
+}
+
 /* =========================================================================
    Sign In Screen
    ========================================================================= */
-  function SignInScreen({ onSignIn }: { onSignIn: () => void }) {
-    useEffect(() => {
-      const isProduction = process.env.NODE_ENV === "production";
+function SignInScreen({ onSignIn }: { onSignIn: () => void }) {
+  const { setUser } = useUserStore();
 
-      if (isProduction) {
-        const authenticate = async () => {
-          const res = await fetch("/api/analyze-report", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({}),
-          });
+  useEffect(() => {
+    const isProduction = true; // process.env.NODE_ENV === "production";
 
-          if (!res.ok) {
-            throw new Error(`API error: ${res.status}`);
-          }
+    if (isProduction) {
+      const authenticate = async () => {
+        // action: "sso" → runs SSO auth + DB upsert, returns user data
+        const res = await fetch("/api/egov", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "sso" }),
+        });
 
-          onSignIn();
-        };
+        if (!res.ok) throw new Error(`SSO API error: ${res.status}`);
 
-        authenticate().catch((err) => console.error("SSO Authentication failed:", err));
-      } else {
-        const timer = setTimeout(() => {
-          onSignIn();
-        }, 1000);
-        return () => clearTimeout(timer);
-      }
-    }, [onSignIn]);
+        const userData = await res.json();
 
-    return (
-      <div className="flex flex-col items-center justify-center h-full px-8 text-center bg-white">
-        <div className="flex flex-col items-center">
-          <div className="w-24 h-24 rounded-2xl bg-white flex items-center justify-center shadow-md">
-            <img src="/icon.png" alt="AlertoPH" className="w-[80px] h-[80px] object-contain" />
-          </div>
-          <h1 className="text-2xl font-bold text-blue-700 mt-5">AlertoPH</h1>
-          <p className="text-gray-400 text-sm mt-1 mb-8">Report. Help. Protect.</p>
+        // Persist user in Zustand (survives across screens via localStorage)
+        setUser({
+          _id: userData._id,
+          name: userData.name,
+          mobile: userData.mobile,
+          email: userData.email,
+          address: userData.address,
+          photo: userData.photo,
+        });
+
+        onSignIn();
+      };
+
+      authenticate().catch((err) => console.error("SSO Authentication failed:", err));
+    } else {
+      // Dev mode: seed a mock user into the store so the UI has data
+      setUser({
+        _id: "dev-user-id",
+        name: "PEDRO DELA CRUZ II",
+        mobile: "+639090000002",
+        email: "josie02@yopmail.com",
+        address: "#100 UGO, DOÑA IMELDA, QUEZON CITY, METRO MANILA, PHILIPPINES",
+        photo: "https://staging-files.oueg.info/staging/9e2be7e4-eafa-4f13-8cbd-a979d98c5b4a.jpg",
+      });
+
+      const timer = setTimeout(() => onSignIn(), 1000);
+      return () => clearTimeout(timer);
+    }
+  }, [onSignIn, setUser]);
+
+  return (
+    <div className="flex flex-col items-center justify-center h-full px-8 text-center bg-white">
+      <div className="flex flex-col items-center">
+        <div className="w-24 h-24 rounded-2xl bg-white flex items-center justify-center shadow-md">
+          <img src="/icon.png" alt="AlertoPH" className="w-[80px] h-[80px] object-contain" />
         </div>
-        <div className="w-8 h-8 border-4 border-blue-100 border-t-blue-700 rounded-full animate-spin mt-4"></div>
+        <h1 className="text-2xl font-bold text-blue-700 mt-5">AlertoPH</h1>
+        <p className="text-gray-400 text-sm mt-1 mb-8">Report. Help. Protect.</p>
       </div>
-    );
-  }
+      <div className="w-8 h-8 border-4 border-blue-100 border-t-blue-700 rounded-full animate-spin mt-4"></div>
+    </div>
+  );
+}
 
 /* =========================================================================
    Analyzing Screen
@@ -355,11 +435,7 @@ function AnalyzingScreen() {
           >
             <div
               className={`w-5 h-5 rounded-full flex items-center justify-center shrink-0 ${
-                i < stepIndex
-                  ? "bg-green-500"
-                  : i === stepIndex
-                  ? "bg-blue-600"
-                  : "bg-gray-300"
+                i < stepIndex ? "bg-green-500" : i === stepIndex ? "bg-blue-600" : "bg-gray-300"
               }`}
             >
               {i < stepIndex ? (
@@ -388,12 +464,17 @@ function DashboardScreen({
   onNavigate: (key: string) => void;
   onOpenReport: (id: string) => void;
 }) {
-  const { reports, stats } = useReports();
+  const { reports, stats, isLoadingReports, refreshReports } = useReports();
+  const { user } = useUserStore();
+
+  // Pull first name from the full name string
+  const firstName = user?.name?.split(" ")[0] ?? "there";
+
   return (
     <div className="flex flex-col h-full">
       <TopBar onMenu={() => {}} />
       <div className="flex-1 overflow-y-auto px-5 pb-4">
-        <p className="text-xl font-bold text-gray-900 mb-4">Hi, {mockUser.firstName}! 👋</p>
+        <p className="text-xl font-bold text-gray-900 mb-4">Hi, {firstName}! 👋</p>
 
         <div className="flex gap-3 mb-6">
           <StatCard icon={FileText}     iconBg="bg-blue-50"   iconFg="text-blue-600"   value={stats.total}       label="Total" />
@@ -403,15 +484,30 @@ function DashboardScreen({
 
         <div className="flex items-center justify-between mb-1">
           <p className="font-bold text-gray-900">Your Reports</p>
-          <button className="flex items-center gap-1 text-sm text-gray-500">
-            Filter <Filter size={14} />
-          </button>
+          <div className="flex items-center gap-3">
+            <button
+              onClick={refreshReports}
+              className="text-xs text-blue-600 font-medium"
+              disabled={isLoadingReports}
+            >
+              {isLoadingReports ? "Loading..." : "Refresh"}
+            </button>
+            <button className="flex items-center gap-1 text-sm text-gray-500">
+              Filter <Filter size={14} />
+            </button>
+          </div>
         </div>
 
         <div>
-          {reports.map((r) => (
-            <ReportCard key={r.id} report={r} onOpen={onOpenReport} />
-          ))}
+          {isLoadingReports && reports.length === 0 ? (
+            <p className="text-sm text-gray-400 py-8 text-center">Loading reports...</p>
+          ) : reports.length === 0 ? (
+            <p className="text-sm text-gray-400 py-8 text-center">No reports yet. Tap + to submit one.</p>
+          ) : (
+            reports.map((r) => (
+              <ReportCard key={r.id} report={r} onOpen={onOpenReport} />
+            ))
+          )}
         </div>
       </div>
 
@@ -437,17 +533,18 @@ function CreateReportScreen({
   onSubmitted,
 }: {
   onNavigate: (key: string) => void;
-  onSubmitted: (id: string) => void;
+  onSubmitted: (reportId: string) => void;
 }) {
   const { addReport } = useReports();
   const [description, setDescription] = useState("");
-  const [date, setDate] = useState("May 21, 2026");
-  const [time, setTime] = useState("09:41 AM");
   const [location, setLocation] = useState("");
-  const [isLoading, setIsLoading] = useState(false);
   const [images, setImages] = useState<{ base64: string; name: string }[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
   const [showError, setShowError] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const date = new Date().toLocaleDateString();
+  const time = new Date().toLocaleTimeString();
 
   async function handleSubmit() {
     if (!description.trim()) return;
@@ -533,8 +630,7 @@ function CreateReportScreen({
         </div>
 
         <label className="text-sm font-semibold text-gray-900">
-          Upload images{" "}
-          <span className="font-normal text-gray-400">(optional · up to 3)</span>
+          Upload images <span className="font-normal text-gray-400">(optional · up to 3)</span>
         </label>
 
         {images.length > 0 && (
@@ -561,9 +657,7 @@ function CreateReportScreen({
           >
             <ImageIcon size={16} />
             Choose from gallery
-            {images.length > 0 && (
-              <span className="text-xs text-gray-400">({images.length}/3)</span>
-            )}
+            {images.length > 0 && <span className="text-xs text-gray-400">({images.length}/3)</span>}
           </button>
         )}
 
@@ -619,8 +713,10 @@ function SuccessScreen({
   onNavigate: (key: string) => void;
   onViewReport: (id: string) => void;
 }) {
+  const recentReport = useReportStore((state) => state.report);
+
   const { getReportById } = useReports();
-  const report = reportId ? getReportById(reportId) : null;
+  const report = recentReport?.id ? getReportById(recentReport.id) : null;
   const [copied, setCopied] = useState(false);
 
   function copyRef() {
@@ -644,7 +740,7 @@ function SuccessScreen({
       <div className="w-full border border-gray-100 rounded-2xl p-5 mt-8 text-left">
         <p className="text-xs text-gray-400">Reference Number</p>
         <div className="flex items-center justify-between mt-1">
-          <p className="text-lg font-bold text-blue-700">{report?.referenceNumber}</p>
+          <p className="text-lg font-bold text-blue-700">{recentReport?.referenceNumber}</p>
           <button onClick={copyRef}>
             <Copy size={16} className="text-gray-400" />
           </button>
@@ -656,12 +752,6 @@ function SuccessScreen({
         </p>
       </div>
 
-      <button
-        onClick={() => reportId && onViewReport(reportId)}
-        className="w-full bg-blue-700 text-white font-semibold py-3.5 rounded-xl mt-6"
-      >
-        View My Report
-      </button>
       <button onClick={() => onNavigate("dashboard")} className="text-blue-700 text-sm font-medium mt-4">
         Back to Dashboard
       </button>
@@ -762,7 +852,7 @@ function ReportDetailScreen({
 }
 
 /* =========================================================================
-   Stub Screens
+   Updates Screen
    ========================================================================= */
 function UpdatesScreen({ onNavigate }: { onNavigate: (key: string) => void }) {
   return (
@@ -776,67 +866,47 @@ function UpdatesScreen({ onNavigate }: { onNavigate: (key: string) => void }) {
   );
 }
 
+/* =========================================================================
+   Profile Screen
+   ========================================================================= */
 function ProfileScreen({ onNavigate }: { onNavigate: (key: string) => void }) {
-  const user = {
-    fullName: "PEDRO DELA CRUZ II",
-    mobile: "+639090000002",
-    email: "josie02@yopmail.com",
-    address: "#100 UGO, DOÑA IMELDA, QUEZON CITY, METRO MANILA, PHILIPPINES",
-    photo: "https://staging-files.oueg.info/staging/9e2be7e4-eafa-4f13-8cbd-a979d98c5b4a.jpg",
-    provider: mockUser.provider,
-  };
+  const { user } = useUserStore();
 
   return (
     <div className="flex flex-col h-full bg-gray-50">
       <TopBar onMenu={() => {}} />
 
-      {/* Hero header */}
       <div className="bg-blue-700 px-6 pt-6 pb-10">
         <p className="text-blue-200 text-xs uppercase tracking-widest mb-4">My Profile</p>
         <div className="flex items-center gap-4">
-          <img
-            src={user.photo}
-            alt={user.fullName}
-            className="w-16 h-16 rounded-full object-cover border-2 border-white shadow"
-          />
+          {user?.photo ? (
+            <img
+              src={user.photo}
+              alt={user.name}
+              className="w-16 h-16 rounded-full object-cover border-2 border-white shadow"
+            />
+          ) : (
+            <div className="w-16 h-16 rounded-full bg-blue-500 flex items-center justify-center border-2 border-white shadow">
+              <User size={28} className="text-white" />
+            </div>
+          )}
           <div>
-            <p className="text-white font-bold text-base leading-tight">{user.fullName}</p>
-            <p className="text-blue-200 text-xs mt-1">Signed in with {user.provider}</p>
+            <p className="text-white font-bold text-base leading-tight">{user?.name ?? "—"}</p>
+            <p className="text-blue-200 text-xs mt-1">Signed in with eGovPH</p>
           </div>
         </div>
       </div>
 
-      {/* Info card — floats over the blue header */}
       <div className="mx-4 -mt-5 bg-white rounded-2xl shadow-md px-5 py-4 flex flex-col gap-4">
-        <InfoRow icon={<Phone size={16} />} label="Mobile" value={user.mobile} />
+        <InfoRow icon={<Phone size={16} />} label="Mobile" value={user?.mobile ?? "—"} />
         <div className="border-t border-gray-100" />
-        <InfoRow icon={<Mail size={16} />} label="Email" value={user.email} />
+        <InfoRow icon={<Mail size={16} />}   label="Email"  value={user?.email   ?? "—"} />
         <div className="border-t border-gray-100" />
-        <InfoRow icon={<MapPin size={16} />} label="Address" value={user.address} />
+        <InfoRow icon={<MapPin size={16} />} label="Address" value={user?.address ?? "—"} />
       </div>
 
       <div className="flex-1" />
       <BottomNav current="profile" onNavigate={onNavigate} />
-    </div>
-  );
-}
-
-function InfoRow({
-  icon,
-  label,
-  value,
-}: {
-  icon: React.ReactNode;
-  label: string;
-  value: string;
-}) {
-  return (
-    <div className="flex items-start gap-3">
-      <div className="mt-0.5 text-blue-600">{icon}</div>
-      <div className="flex flex-col">
-        <span className="text-xs text-gray-400 uppercase tracking-wide">{label}</span>
-        <span className="text-sm text-gray-800 font-medium leading-snug mt-0.5">{value}</span>
-      </div>
     </div>
   );
 }
@@ -848,9 +918,7 @@ function AppShell() {
   const [screen, setScreen] = useState("signin");
   const [activeReportId, setActiveReportId] = useState<string | null>(null);
 
-  function navigate(key: string) {
-    setScreen(key);
-  }
+  function navigate(key: string) { setScreen(key); }
 
   function handleSubmitted(reportId: string) {
     setActiveReportId(reportId);
